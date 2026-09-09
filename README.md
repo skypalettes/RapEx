@@ -71,6 +71,30 @@ test/run.js             自己検証スクリプト
 `shoudan` / `shodan` / `syoudan` / `しょうだん` / `ショウダン` はすべて `syodan` に落ちます。
 英語ラベル（`Account`）を壊さないよう、ローマ字面は素の文字列とは別のキーとして評価します。
 
+### ドメインの正規化
+
+Salesforce は拡張ドメイン (Enhanced Domains) で 1 組織に用途別の複数ホストを払い出します。
+
+| 用途 | ホスト |
+| --- | --- |
+| Lightning | `MyDomain.lightning.force.com` |
+| 設定 (Setup) | `MyDomain.my.salesforce-setup.com` |
+| API / Classic | `MyDomain.my.salesforce.com` |
+| Visualforce | `MyDomain--pkg.vf.force.com` |
+
+遷移元のホストをそのままベース URL に使うと、設定画面から起動したときに壊れます
+（設定ドメインは通常オブジェクトのパスを解釈できません）。そこで `src/lib/org.js` の
+`splitHost()` で**接尾辞を剥がして「組織を表す部分」を取り出し、用途に応じて付け直します**。
+設定ドメインの `.my` を残したまま置換すると実在しない `MyDomain.my.lightning.force.com` に
+なるため、単純な文字列置換ではなく接尾辞テーブルで扱っています。
+
+遷移先の振り分けは 2 通りだけです。
+
+- `/lightning/` `/ltng/` 配下 → **Lightning ドメイン**。設定画面 (`/lightning/setup/...`) も
+  ここ宛てで構いません。Salesforce 側が設定ドメインへリダイレクトするため、
+  拡張機能が「設定かどうか」を判定する必要はありません。
+- それ以外（`/_ui/...` の開発者コンソール、`/secur/logout.jsp` など）→ **API / Classic ドメイン**。
+
 ### マルチ組織とセキュリティ
 
 - 組織固有のメタデータ（カスタムオブジェクト一覧など）は **`chrome.storage.session`（インメモリ）** にのみ保持します。

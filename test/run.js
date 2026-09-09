@@ -145,6 +145,64 @@ test('/lightning/ 配下は Lightning ドメインへ、それ以外は現在の
   assert.strictEqual(Org.buildUrl('acme.lightning.force.com', 'https://x.test/a'), 'https://x.test/a');
 });
 
+test('設定ドメイン (.my.salesforce-setup.com) から正しいホストを導ける', () => {
+  // 「.my」を落とさないと実在しない acme.my.lightning.force.com になる
+  assert.strictEqual(Org.toLightningHost('acme.my.salesforce-setup.com'), 'acme.lightning.force.com');
+  assert.strictEqual(Org.toApiHost('acme.my.salesforce-setup.com'), 'acme.my.salesforce.com');
+  assert.strictEqual(
+    Org.toLightningHost('acme--dev.sandbox.my.salesforce-setup.com'),
+    'acme--dev.sandbox.lightning.force.com'
+  );
+  assert.strictEqual(
+    Org.toApiHost('acme--dev.sandbox.my.salesforce-setup.com'),
+    'acme--dev.sandbox.my.salesforce.com'
+  );
+});
+
+test('レポートの 4 パターンすべてで遷移先ホストが実在するものになる', () => {
+  const LEX = 'acme.lightning.force.com';
+  const SETUP = 'acme.my.salesforce-setup.com';
+  const cases = [
+    [LEX, '/lightning/o/Account/list', 'https://acme.lightning.force.com/lightning/o/Account/list'],
+    [LEX, '/lightning/setup/Flows/home', 'https://acme.lightning.force.com/lightning/setup/Flows/home'],
+    [SETUP, '/lightning/o/Account/list', 'https://acme.lightning.force.com/lightning/o/Account/list'],
+    [SETUP, '/lightning/setup/Flows/home', 'https://acme.lightning.force.com/lightning/setup/Flows/home']
+  ];
+  for (const [from, path, expected] of cases) {
+    assert.strictEqual(Org.buildUrl(from, path), expected, `${from} -> ${path}`);
+  }
+});
+
+test('組織を表す部分が二重にならない (.my.my / .my.lightning を作らない)', () => {
+  const hosts = [
+    'acme.lightning.force.com', 'acme.my.salesforce-setup.com', 'acme.salesforce-setup.com',
+    'acme.my.salesforce.com', 'acme--c.vf.force.com', 'acme--dev.sandbox.my.salesforce-setup.com',
+    'acme--dev.sandbox.lightning.force.com', 'acme--dev.sandbox.my.salesforce.com'
+  ];
+  for (const host of hosts) {
+    for (const resolved of [Org.toApiHost(host), Org.toLightningHost(host)]) {
+      assert.ok(!/\.my\.my\./.test(resolved), '重複した .my: ' + host + ' -> ' + resolved);
+      assert.ok(!/\.my\.lightning\./.test(resolved), '不正な .my.lightning: ' + host + ' -> ' + resolved);
+      assert.ok(!/salesforce-setup/.test(resolved), '設定ドメインが残存: ' + host + ' -> ' + resolved);
+    }
+  }
+});
+
+test('全辞書エントリが設定ドメインからも実在ホストへ解決される', () => {
+  for (const entry of entries) {
+    const url = new URL(Org.buildUrl('acme.my.salesforce-setup.com', entry.path));
+    assert.ok(
+      url.hostname === 'acme.lightning.force.com' || url.hostname === 'acme.my.salesforce.com',
+      `${entry.id}: ${url.hostname}`
+    );
+  }
+});
+
+test('My Domain を持たない組織はホストを書き換えない', () => {
+  assert.strictEqual(Org.toApiHost('na1.salesforce.com'), 'na1.salesforce.com');
+  assert.strictEqual(Org.toLightningHost('na1.salesforce.com'), 'na1.salesforce.com');
+});
+
 test('現在の画面のコンテキストを判定できる', () => {
   assert.deepStrictEqual(
     Org.detectContext('https://acme.lightning.force.com/lightning/r/Account/0015g00000XyZaBAAV/view'),

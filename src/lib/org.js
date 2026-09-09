@@ -6,44 +6,79 @@ var RapExOrg = (function () {
   'use strict';
 
   /**
+   * Salesforce が組織ごとに払い出すホスト名の接尾辞。
+   *
+   * 拡張ドメイン (Enhanced Domains) では 1 組織が用途別に複数のホストを持つ。
+   *   Lightning : MyDomain.lightning.force.com
+   *   設定       : MyDomain.my.salesforce-setup.com   <- 「.my」が入る
+   *   API/Classic: MyDomain.my.salesforce.com
+   *   Visualforce: MyDomain--pkg.vf.force.com
+   * Sandbox では MyDomain の部分が MyDomain--SandboxName.sandbox になる。
+   *
+   * 接尾辞を剥がして「組織を表す部分（base）」を取り出し、用途に応じて付け直す。
+   * 単純な文字列置換だと設定ドメインの「.my」が残り、実在しない
+   * MyDomain.my.lightning.force.com を組み立ててしまうため、この形にしている。
+   */
+  var HOST_SUFFIXES = [
+    { re: /\.lightning\.force\.com$/, kind: 'lightning' },
+    { re: /\.my\.salesforce-setup\.com$/, kind: 'setup' },
+    { re: /\.salesforce-setup\.com$/, kind: 'setup' },
+    { re: /\.my\.salesforce\.com$/, kind: 'api' },
+    { re: /\.vf\.force\.com$/, kind: 'scoped' },
+    { re: /\.visual\.force\.com$/, kind: 'scoped' },
+    { re: /\.visualforce\.com$/, kind: 'scoped' },
+    { re: /\.file\.force\.com$/, kind: 'scoped' },
+    { re: /\.documentforce\.com$/, kind: 'scoped' },
+    { re: /\.cloudforce\.com$/, kind: 'instance' },
+    { re: /\.force\.com$/, kind: 'other' },
+    { re: /\.salesforce\.com$/, kind: 'instance' }
+  ];
+
+  /**
+   * ホスト名を「組織を表す部分」と用途に分解する。
+   * @returns {{base: string, kind: string, host: string}}
+   */
+  function splitHost(host) {
+    var h = String(host || '').toLowerCase();
+    if (h.indexOf(':') > -1) h = h.split(':')[0];
+
+    for (var i = 0; i < HOST_SUFFIXES.length; i++) {
+      var suffix = HOST_SUFFIXES[i];
+      if (!suffix.re.test(h)) continue;
+      var base = h.replace(suffix.re, '');
+      // Visualforce / コンテンツドメインの --pkg, --c は組織名ではないので落とす
+      if (suffix.kind === 'scoped') base = base.replace(/--[^.]*$/, '');
+      return { base: base, kind: suffix.kind, host: h };
+    }
+    return { base: h, kind: 'unknown', host: h };
+  }
+
+  /**
    * 画面のホスト名から API を叩くべきホスト名（*.my.salesforce.com）を求める。
-   * sid Cookie は Lightning ドメインではなく API ドメイン側のものが有効。
+   * sid Cookie は Lightning / 設定ドメインではなく API ドメイン側のものが有効。
    */
   function toApiHost(host) {
     if (!host) return '';
-    var h = String(host).toLowerCase();
-    if (h.indexOf(':') > -1) h = h.split(':')[0];
-
-    if (/\.lightning\.force\.com$/.test(h)) {
-      return h.replace(/\.lightning\.force\.com$/, '.my.salesforce.com');
-    }
-    if (/\.salesforce-setup\.com$/.test(h)) {
-      return h.replace(/\.salesforce-setup\.com$/, '.my.salesforce.com');
-    }
-    if (/\.my\.salesforce\.com$/.test(h) || /\.salesforce\.com$/.test(h)) {
-      return h;
-    }
-    // Visualforce ドメイン (xxx--c.vf.force.com など)
-    var vf = h.match(/^([^.]+?)(?:--[^.]+)?\.(?:vf|visual)\.force\.com$/);
-    if (vf) return vf[1] + '.my.salesforce.com';
-    if (/\.force\.com$/.test(h)) {
-      return h.replace(/\.force\.com$/, '.my.salesforce.com');
-    }
-    return h;
+    var parts = splitHost(host);
+    // My Domain 未設定の組織（naXX.salesforce.com 等）はそのホストが API ドメイン
+    if (parts.kind === 'instance' || parts.kind === 'unknown') return parts.host;
+    if (parts.kind === 'api') return parts.host;
+    return parts.base + '.my.salesforce.com';
   }
 
-  /** Lightning の画面を開くためのホスト名 */
+  /**
+   * Lightning の画面を開くためのホスト名。
+   * 設定画面 (/lightning/setup/...) もこのホスト宛てで良い。
+   * Salesforce 側が設定ドメインへリダイレクトしてくれるため、
+   * 拡張機能側で「設定かどうか」を判定する必要はない。
+   */
   function toLightningHost(host) {
-    var h = String(host || '').toLowerCase();
-    if (h.indexOf(':') > -1) h = h.split(':')[0];
-    if (/\.lightning\.force\.com$/.test(h)) return h;
-    if (/\.my\.salesforce\.com$/.test(h)) {
-      return h.replace(/\.my\.salesforce\.com$/, '.lightning.force.com');
-    }
-    if (/\.salesforce-setup\.com$/.test(h)) {
-      return h.replace(/\.salesforce-setup\.com$/, '.lightning.force.com');
-    }
-    return h;
+    if (!host) return '';
+    var parts = splitHost(host);
+    if (parts.kind === 'lightning') return parts.host;
+    // My Domain を持たない組織には Lightning ドメインが無いので現状維持
+    if (parts.kind === 'instance' || parts.kind === 'unknown') return parts.host;
+    return parts.base + '.lightning.force.com';
   }
 
   /**
@@ -77,6 +112,7 @@ var RapExOrg = (function () {
   }
 
   return {
+    splitHost: splitHost,
     toApiHost: toApiHost,
     toLightningHost: toLightningHost,
     buildUrl: buildUrl,
