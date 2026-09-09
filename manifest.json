@@ -1,0 +1,79 @@
+{
+  "manifest_version": 3,
+  "name": "Rapid Experience",
+  "short_name": "RapEx",
+  "version": "0.1.0",
+  "description": "思考から遷移までのラグをゼロに。Salesforce 向けのシンプルなコマンドパレット型ランチャー。",
+  "minimum_chrome_version": "116",
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "cookies",
+    "storage",
+    "tabs"
+  ],
+
+  "host_permissions": [
+    "https://*.salesforce.com/*",
+    "https://*.force.com/*",
+    "https://*.salesforce-setup.com/*",
+    "https://*.cloudforce.com/*",
+    "https://*.visualforce.com/*"
+  ],
+
+  "background": {
+    "service_worker": "src/background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.salesforce.com/*",
+        "https://*.force.com/*",
+        "https://*.salesforce-setup.com/*",
+        "https://*.cloudforce.com/*",
+        "https://*.visualforce.com/*"
+      ],
+      "js": [
+        "src/lib/org.js",
+        "src/lib/kana.js",
+        "src/lib/search.js",
+        "src/data/dictionary.js",
+        "src/content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+
+  "web_accessible_resources": [
+    {
+      "resources": ["src/style.css"],
+      "matches": [
+        "https://*.salesforce.com/*",
+        "https://*.force.com/*",
+        "https://*.salesforce-setup.com/*",
+        "https://*.cloudforce.com/*",
+        "https://*.visualforce.com/*"
+      ]
+    }
+  ],
+
+  "commands": {
+    "toggle-palette": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+K",
+        "mac": "Command+Shift+K"
+      },
+      "description": "Rapid Experience のコマンドパレットを開く"
+    }
+  }
+}

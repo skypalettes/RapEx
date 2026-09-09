@@ -1,0 +1,9 @@
+{
+  "name": "rapid-experience",
+  "version": "0.1.0",
+  "private": true,
+  "description": "思考から遷移までのラグをゼロに。Salesforce 向けのコマンドパレット型ランチャー。",
+  "scripts": {
+    "test": "node test/run.js"
+  }
+}

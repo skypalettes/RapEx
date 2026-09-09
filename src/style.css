@@ -1,0 +1,302 @@
+/*
+ * RapEx コマンドパレット。
+ * Shadow DOM 内に読み込むため、Salesforce (SLDS) のスタイルとは干渉しない。
+ * モダンでミニマル、視線が「入力欄 -> 先頭候補」だけに向くことを狙う。
+ */
+
+:host,
+* {
+  box-sizing: border-box;
+}
+
+.rapex-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12vh 16px 16px;
+  background: rgba(12, 16, 24, 0.42);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans",
+    "Hiragino Kaku Gothic ProN", "Noto Sans JP", Meiryo, sans-serif;
+  animation: rapex-fade 110ms ease-out;
+}
+
+@keyframes rapex-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes rapex-rise {
+  from { opacity: 0; transform: translateY(-6px) scale(0.99); }
+  to   { opacity: 1; transform: none; }
+}
+
+.rapex-panel {
+  width: min(640px, 100%);
+  max-height: 72vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 14px;
+  background: #ffffff;
+  color: #16202e;
+  box-shadow: 0 24px 64px rgba(9, 16, 28, 0.28), 0 2px 8px rgba(9, 16, 28, 0.12);
+  animation: rapex-rise 130ms cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+
+/* ---- 入力欄 ---- */
+
+.rapex-inputRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(22, 32, 46, 0.08);
+}
+
+.rapex-prompt {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  opacity: 0.42;
+}
+
+.rapex-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 19px;
+  line-height: 1.4;
+  font-family: inherit;
+  padding: 0;
+}
+
+.rapex-input::placeholder {
+  color: rgba(22, 32, 46, 0.36);
+}
+
+.rapex-org {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(22, 32, 46, 0.05);
+  color: rgba(22, 32, 46, 0.55);
+}
+
+.rapex-org[data-sandbox="true"] {
+  background: rgba(214, 133, 12, 0.14);
+  color: #8a5405;
+}
+
+/* ---- 候補リスト ---- */
+
+.rapex-results {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  margin: 0;
+  list-style: none;
+}
+
+.rapex-group {
+  padding: 10px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: rgba(22, 32, 46, 0.4);
+}
+
+.rapex-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  cursor: pointer;
+  scroll-margin: 8px;
+}
+
+.rapex-item[aria-selected="true"] {
+  background: rgba(24, 108, 231, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(24, 108, 231, 0.22);
+}
+
+.rapex-badge {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(22, 32, 46, 0.06);
+  color: rgba(22, 32, 46, 0.55);
+}
+
+.rapex-badge[data-group="object"] { background: rgba(24, 108, 231, 0.12); color: #1461c4; }
+.rapex-badge[data-group="setup"]  { background: rgba(108, 92, 231, 0.12); color: #5645c9; }
+.rapex-badge[data-group="record"] { background: rgba(20, 158, 110, 0.14); color: #0f7a54; }
+.rapex-badge[data-group="command"]{ background: rgba(214, 133, 12, 0.16); color: #8a5405; }
+
+.rapex-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.rapex-title {
+  font-size: 14px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rapex-subtitle {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: rgba(22, 32, 46, 0.45);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rapex-enter {
+  flex: none;
+  font-size: 11px;
+  color: rgba(22, 32, 46, 0.35);
+  opacity: 0;
+}
+
+.rapex-item[aria-selected="true"] .rapex-enter {
+  opacity: 1;
+}
+
+/* ---- 状態表示 ---- */
+
+.rapex-status {
+  padding: 22px 18px;
+  text-align: center;
+  font-size: 13px;
+  color: rgba(22, 32, 46, 0.45);
+}
+
+.rapex-status[data-tone="error"] {
+  color: #b4372a;
+}
+
+.rapex-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  font-size: 11.5px;
+  color: rgba(22, 32, 46, 0.42);
+}
+
+.rapex-spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid rgba(22, 32, 46, 0.18);
+  border-top-color: rgba(22, 32, 46, 0.5);
+  animation: rapex-spin 620ms linear infinite;
+}
+
+@keyframes rapex-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ---- フッタ ---- */
+
+.rapex-footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 16px;
+  border-top: 1px solid rgba(22, 32, 46, 0.07);
+  background: rgba(22, 32, 46, 0.02);
+  font-size: 11px;
+  color: rgba(22, 32, 46, 0.42);
+}
+
+.rapex-footer .rapex-spacer {
+  margin-left: auto;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 17px;
+  padding: 1px 5px;
+  margin-right: 3px;
+  border-radius: 4px;
+  border: 1px solid rgba(22, 32, 46, 0.16);
+  border-bottom-width: 2px;
+  background: #fff;
+  font: inherit;
+  font-size: 10px;
+  text-align: center;
+  color: rgba(22, 32, 46, 0.6);
+}
+
+mark {
+  background: transparent;
+  color: #1461c4;
+  font-weight: 700;
+}
+
+/* ---- ダークモード ---- */
+
+@media (prefers-color-scheme: dark) {
+  .rapex-overlay { background: rgba(3, 6, 12, 0.55); }
+
+  .rapex-panel {
+    background: #1b1f27;
+    color: #e9edf3;
+    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  }
+  .rapex-inputRow { border-bottom-color: rgba(255, 255, 255, 0.08); }
+  .rapex-input::placeholder { color: rgba(233, 237, 243, 0.34); }
+  .rapex-org { background: rgba(255, 255, 255, 0.07); color: rgba(233, 237, 243, 0.6); }
+  .rapex-org[data-sandbox="true"] { background: rgba(240, 168, 48, 0.18); color: #f0b455; }
+  .rapex-group,
+  .rapex-subtitle,
+  .rapex-status,
+  .rapex-loading,
+  .rapex-footer,
+  .rapex-enter { color: rgba(233, 237, 243, 0.45); }
+  .rapex-item[aria-selected="true"] {
+    background: rgba(90, 160, 255, 0.16);
+    box-shadow: inset 0 0 0 1px rgba(90, 160, 255, 0.3);
+  }
+  .rapex-badge { background: rgba(255, 255, 255, 0.08); color: rgba(233, 237, 243, 0.6); }
+  .rapex-badge[data-group="object"] { background: rgba(90, 160, 255, 0.18); color: #8fc0ff; }
+  .rapex-badge[data-group="setup"]  { background: rgba(150, 136, 255, 0.18); color: #b6acff; }
+  .rapex-badge[data-group="record"] { background: rgba(45, 200, 140, 0.18); color: #6fdcae; }
+  .rapex-badge[data-group="command"]{ background: rgba(240, 168, 48, 0.18); color: #f0b455; }
+  .rapex-footer { border-top-color: rgba(255, 255, 255, 0.07); background: rgba(255, 255, 255, 0.02); }
+  kbd { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.14); color: rgba(233, 237, 243, 0.6); }
+  mark { color: #8fc0ff; }
+  .rapex-spinner { border-color: rgba(255, 255, 255, 0.16); border-top-color: rgba(255, 255, 255, 0.5); }
+  .rapex-status[data-tone="error"] { color: #ff8f7d; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rapex-overlay,
+  .rapex-panel { animation: none; }
+  .rapex-spinner { animation-duration: 2s; }
+}
