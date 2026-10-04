@@ -14,6 +14,8 @@
   var IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   var MOD_LABEL = IS_MAC ? '⌘' : 'Ctrl';
   var RECORD_DEBOUNCE_MS = 230;
+  var USER_DEBOUNCE_MS = 350;      // SOQL を打鍵ごとに投げないための待ち時間
+  var USER_MIN_LENGTH = 2;
   var RESULT_LIMIT = 12;
 
   /** 空クエリ時に出す既定の候補（迷ったときの入口） */
@@ -27,21 +29,32 @@
     query: '',
     selected: 0,
     results: [],
+    mode: 'search',        // search | command | loginAs
     staticEntries: [],
     dynamicEntries: [],
+    orgEntries: [],
     recordEntries: [],
+    userEntries: [],
     commandEntries: [],
     mru: { counts: {}, order: [] },
     catalog: 'idle',       // idle | loading | ready | error
     catalogError: null,
+    orgInfo: 'idle',       // idle | loading | ready | error
     records: 'idle',       // idle | loading | ready | error
     recordError: null,
+    recordTerm: '',
+    users: 'idle',         // idle | loading | ready | error
+    userError: null,
+    userTerm: '',
     context: RapExOrg.detectContext(location.href)
   };
 
   var ui = null;
   var recordTimer = null;
   var recordToken = 0;
+  var userTimer = null;
+  var userToken = 0;
+  var userCache = {};      // 検索語 -> 応答。打ち直し・BackSpace で同じ SOQL を投げない
   var lastToggleAt = 0;
 
   /* ---------------------------------------------------------------- */
@@ -82,7 +95,11 @@
         run: function () {
           state.catalog = 'idle';
           state.dynamicEntries = [];
+          state.orgInfo = 'idle';
+          state.orgEntries = [];
+          userCache = {};
           return send({ type: 'CLEAR_CATALOG', host: HOST }).then(function () {
+            loadOrgInfo();
             return loadCatalog(true);
           });
         },
@@ -115,6 +132,13 @@
         run: function () {
           return send({ type: 'OPEN_SHORTCUTS' });
         }
+      },
+      {
+        id: 'cmd:login-as',
+        title: '代理ログイン (Login as)',
+        subtitle: 'ユーザーを名前で検索して代理ログインする（> login as 名前）',
+        keywords: ['login as', 'proxy login', 'だいりろぐいん', 'ろぐいん'],
+        fill: '> login as '
       },
       {
         id: 'cmd:logout',
@@ -204,6 +228,21 @@
     });
   }
 
+  /** 組織の設定に依存するエントリ（個人取引先など）。補助的な情報なので失敗しても UI には出さない。 */
+  function loadOrgInfo() {
+    if (state.orgInfo !== 'idle') return Promise.resolve();
+    state.orgInfo = 'loading';
+    return send({ type: 'GET_ORG_INFO', host: HOST }).then(function (response) {
+      if (!response.ok) {
+        state.orgInfo = 'error';
+        return;
+      }
+      state.orgEntries = RapExDictionary.orgEntries(response.data).map(RapExSearch.index);
+      state.orgInfo = 'ready';
+      render();
+    });
+  }
+
   function loadMru() {
     return send({ type: 'GET_MRU', host: HOST }).then(function (response) {
       if (response.ok && response.data) state.mru = response.data;
@@ -218,19 +257,29 @@
     Account: '取', Contact: '責', Lead: 'リ', Opportunity: '商', Case: 'ケ', User: 'ユ'
   };
 
-  function scheduleRecordSearch(term, localHits) {
+  /** compute() から呼ばれるため、ここでは再描画せず状態だけ戻す */
+  function cancelRecordSearch() {
     clearTimeout(recordTimer);
+    recordToken++;
+    state.records = 'idle';
+    state.recordEntries = [];
+    state.recordTerm = '';
+  }
+
+  function scheduleRecordSearch(term, localHits) {
     var forced = term.charAt(0) === '?';
     var query = forced ? term.slice(1).trim() : term;
 
     if (query.length < 2 || (!forced && localHits >= 4)) {
-      // compute() から呼ばれるため、ここでは再描画せず状態だけ戻す
-      state.recordEntries = [];
-      state.records = 'idle';
+      cancelRecordSearch();
       return;
     }
+    // 応答後の render() からも compute() 経由でここへ来る。同じ語で投げ直さない
+    if (query === state.recordTerm && state.records !== 'idle') return;
 
+    clearTimeout(recordTimer);
     var token = ++recordToken;
+    state.recordTerm = query;
     state.records = 'loading';
     recordTimer = setTimeout(function () {
       send({ type: 'SEARCH_RECORDS', host: HOST, term: query }).then(function (response) {
@@ -261,6 +310,72 @@
   }
 
   /* ---------------------------------------------------------------- */
+  /* 代理ログイン (> login as) のユーザー検索 (SOQL)                    */
+  /* ---------------------------------------------------------------- */
+
+  function cancelUserSearch() {
+    clearTimeout(userTimer);
+    userToken++;
+    state.users = 'idle';
+    state.userError = null;
+    state.userEntries = [];
+    state.userTerm = '';
+  }
+
+  function userEntries(data) {
+    return (data.users || []).map(function (user) {
+      return {
+        id: 'user:' + user.id,
+        group: 'command',
+        badge: 'ユ',
+        title: user.name + ' としてログイン',
+        subtitle: [user.username, user.profile].filter(Boolean).join(' · '),
+        url: RapExOrg.buildLoginAsUrl(HOST, data.orgId, user.id, location.pathname)
+      };
+    });
+  }
+
+  function scheduleUserSearch(term) {
+    // 応答後の render() からも compute() 経由でここへ来る。同じ語で投げ直さない
+    if (term === state.userTerm && state.users !== 'idle') return;
+
+    clearTimeout(userTimer);
+    var token = ++userToken;
+    state.userTerm = term;
+    state.userError = null;
+
+    if (term.length < USER_MIN_LENGTH) {
+      state.users = 'idle';
+      state.userEntries = [];
+      return;
+    }
+    if (userCache[term]) {
+      state.userEntries = userEntries(userCache[term]);
+      state.users = 'ready';
+      return;
+    }
+
+    // 前の語の結果は応答が来るまで残しておく（ちらつき防止）
+    state.users = 'loading';
+    userTimer = setTimeout(function () {
+      send({ type: 'SEARCH_USERS', host: HOST, term: term }).then(function (response) {
+        if (token !== userToken || !state.open) return;
+        if (!response.ok) {
+          state.users = 'error';
+          state.userError = response.error;
+          state.userEntries = [];
+          render();
+          return;
+        }
+        userCache[term] = response.data;
+        state.userEntries = userEntries(response.data);
+        state.users = 'ready';
+        render();
+      });
+    }, USER_DEBOUNCE_MS);
+  }
+
+  /* ---------------------------------------------------------------- */
   /* 検索実行                                                          */
   /* ---------------------------------------------------------------- */
 
@@ -270,8 +385,24 @@
     return entry.apiName === state.context.objectApiName ? 70 : 0;
   }
 
+  function allEntries() {
+    return state.staticEntries.concat(state.dynamicEntries, state.orgEntries);
+  }
+
+  /** レコード Id が入力されたときに先頭へ出す遷移候補（通信なしで即時に出す） */
+  function recordIdEntry(recordId) {
+    return {
+      id: 'id:' + recordId,
+      group: 'record',
+      badge: 'ID',
+      title: 'レコード詳細へ遷移: ' + recordId,
+      subtitle: 'Id ダイレクト遷移',
+      path: '/lightning/r/' + recordId + '/view'
+    };
+  }
+
   function recentEntries() {
-    var pool = state.staticEntries.concat(state.dynamicEntries);
+    var pool = allEntries();
     var byId = {};
     pool.forEach(function (entry) { byId[entry.id] = entry; });
 
@@ -295,18 +426,31 @@
 
     if (query.charAt(0) === '>') {
       var commandQuery = query.slice(1).trim();
+      cancelRecordSearch();
+      var loginAsTerm = RapExSearch.parseLoginAs(commandQuery);
+      if (loginAsTerm !== null) {
+        state.mode = 'loginAs';
+        scheduleUserSearch(loginAsTerm);
+        return state.userEntries;
+      }
+      state.mode = 'command';
+      cancelUserSearch();
       state.commandEntries = buildCommands();
       return RapExSearch.run(commandQuery, state.commandEntries, { limit: RESULT_LIMIT });
     }
 
+    state.mode = 'search';
+    cancelUserSearch();
+
     if (!query) {
+      cancelRecordSearch();
       var buckets = recentEntries();
       return buckets.recent
         .map(function (entry) { return withSection(entry, '最近使った項目'); })
         .concat(buckets.defaults.map(function (entry) { return withSection(entry, 'よく使う入口'); }));
     }
 
-    var pool = state.staticEntries.concat(state.dynamicEntries);
+    var pool = allEntries();
     var searchTerm = query.charAt(0) === '?' ? query.slice(1).trim() : query;
     var local = searchTerm
       ? RapExSearch.run(searchTerm, pool, {
@@ -315,6 +459,13 @@
           bonus: contextBonus
         })
       : [];
+
+    // Id は 1 件に確定するので SOSL は投げず、遷移候補を最上位に置く
+    var recordId = query.charAt(0) === '?' ? null : RapExSearch.detectRecordId(query);
+    if (recordId) {
+      cancelRecordSearch();
+      return [recordIdEntry(recordId)].concat(local).slice(0, RESULT_LIMIT);
+    }
 
     scheduleRecordSearch(query, local.length);
 
@@ -360,7 +511,7 @@
       '    </svg>',
       '    <input class="rapex-input" type="text" autocomplete="off" autocorrect="off" spellcheck="false"',
       '           aria-autocomplete="list" aria-controls="rapex-results"',
-      '           placeholder="移動先を検索（例: torihiki / とりひき / account、> でコマンド）">',
+      '           placeholder="移動先を検索（例: torihiki / とりひき / account / レコード Id、> でコマンド）">',
       '    <span class="rapex-org"></span>',
       '  </div>',
       '  <ul class="rapex-results" id="rapex-results" role="listbox"></ul>',
@@ -448,6 +599,9 @@
     if (state.records === 'loading') {
       html.push('<li class="rapex-loading"><span class="rapex-spinner"></span>レコードを検索中…</li>');
     }
+    if (state.users === 'loading') {
+      html.push('<li class="rapex-loading"><span class="rapex-spinner"></span>ユーザーを検索中…</li>');
+    }
 
     state.results.forEach(function (entry, index) {
       if (entry.section && entry.section !== section) {
@@ -472,7 +626,18 @@
     if (!state.results.length) {
       var message = '一致する項目がありません';
       var tone = 'muted';
-      if (state.catalog === 'error' && state.catalogError) {
+      if (state.mode === 'loginAs') {
+        if (state.users === 'error' && state.userError) {
+          message = 'ユーザー検索に失敗しました: ' + state.userError.message;
+          tone = 'error';
+        } else if (state.users === 'loading') {
+          message = '検索中…';
+        } else if (state.userTerm.length < USER_MIN_LENGTH) {
+          message = '代理ログインするユーザーの名前またはユーザー名を ' + USER_MIN_LENGTH + ' 文字以上入力してください';
+        } else {
+          message = '一致する有効なユーザーがいません';
+        }
+      } else if (state.catalog === 'error' && state.catalogError) {
         message = 'メタデータを取得できません: ' + state.catalogError.message;
         tone = 'error';
       } else if (state.records === 'error' && state.recordError) {
@@ -525,6 +690,16 @@
 
     send({ type: 'TOUCH_MRU', host: HOST, entryId: entry.id });
     state.mru.counts[entry.id] = (state.mru.counts[entry.id] || 0) + 1;
+
+    // 入力欄を書き換えて続きを打たせるコマンド（> login as など）
+    if (entry.fill) {
+      state.query = entry.fill;
+      state.selected = 0;
+      ui.input.value = entry.fill;
+      render();
+      ui.input.focus();
+      return;
+    }
 
     if (typeof entry.run === 'function') {
       var result = entry.run();
@@ -595,15 +770,14 @@
 
     loadMru().then(render);
     loadCatalog(false);
+    loadOrgInfo();
   }
 
   function close() {
     if (!state.open) return;
     state.open = false;
-    clearTimeout(recordTimer);
-    recordToken++;
-    state.records = 'idle';
-    state.recordEntries = [];
+    cancelRecordSearch();
+    cancelUserSearch();
     if (ui && ui.host.parentNode) ui.host.parentNode.removeChild(ui.host);
   }
 

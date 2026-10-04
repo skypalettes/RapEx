@@ -15,7 +15,10 @@ var RapExDictionary = (function () {
   var SETUP = [
     ['setup-home', '設定ホーム', '/lightning/setup/SetupOneHome/home', ['せってい', 'setup', 'home', 'かんり']],
     ['setup-users', 'ユーザー', '/lightning/setup/ManageUsers/home', ['ゆーざー', 'users', 'user', 'じんいん']],
-    ['setup-profiles', 'プロファイル', '/lightning/setup/EnhancedProfiles/home', ['ぷろふぁいる', 'profiles', 'profile']],
+    // 「拡張プロファイルユーザーインターフェース」の有効 / 無効で遷移先が異なる。
+    // API で判定するとラグが出るため両方を載せ、どちらを使うかは MRU の学習に任せる。
+    ['setup-profiles-enhanced', 'プロファイル (拡張UI)', '/lightning/setup/EnhancedProfiles/home', ['ぷろふぁいる', 'profiles', 'profile', 'enhanced', 'かくちょう']],
+    ['setup-profiles', 'プロファイル (標準UI)', '/lightning/setup/Profiles/home', ['ぷろふぁいる', 'profiles', 'profile', 'standard', 'ひょうじゅん']],
     ['setup-permsets', '権限セット', '/lightning/setup/PermSets/home', ['けんげんせっと', 'permission sets', 'permset']],
     ['setup-permsetgroups', '権限セットグループ', '/lightning/setup/PermSetGroups/home', ['けんげんせっとぐるーぷ', 'permission set groups']],
     ['setup-roles', 'ロール', '/lightning/setup/Roles/home', ['ろーる', 'roles', 'role hierarchy', 'かいそう']],
@@ -144,6 +147,21 @@ var RapExDictionary = (function () {
     return list;
   }
 
+  /**
+   * 組織の設定に応じて出し分けるエントリ。background.js の GET_ORG_INFO の結果から作る。
+   * @param {{hasPersonAccount?: boolean}} info
+   */
+  function orgEntries(info) {
+    var entries = [];
+    if (info && info.hasPersonAccount) {
+      entries.push(entry('obj:PersonAccount:setup', 'object', '個人取引先 の設定', 'PersonAccount · オブジェクトマネージャ',
+        '/lightning/setup/ObjectManager/PersonAccount/Details/view',
+        ['こじんとりひきさき', 'PersonAccount', 'person account', 'せってい', 'setup', 'object manager'],
+        { apiName: 'PersonAccount', custom: false, boost: 15 }));
+    }
+    return entries;
+  }
+
   /** 静的辞書全体を組み立てる。 */
   function buildStatic() {
     var entries = [];
@@ -165,6 +183,7 @@ var RapExDictionary = (function () {
   return {
     buildStatic: buildStatic,
     objectEntries: objectEntries,
+    orgEntries: orgEntries,
     entry: entry,
     STANDARD_OBJECTS: STANDARD_OBJECTS
   };

@@ -122,6 +122,119 @@ test('一致しないクエリは空を返す', () => {
   assert.deepStrictEqual(Search.run('zzzzqqq', entries, { limit: 5 }), []);
 });
 
+test('プロファイルは 拡張UI / 標準UI の両方の遷移先が出る', () => {
+  const hits = Search.run('profile', entries, { limit: 5 });
+  const paths = hits.map((e) => e.path);
+  assert.ok(paths.includes('/lightning/setup/EnhancedProfiles/home'), paths.join(','));
+  assert.ok(paths.includes('/lightning/setup/Profiles/home'), paths.join(','));
+  for (const q of ['ぷろふぁいる', 'purofairu', 'プロファイル']) {
+    assert.ok(titleOf(q, 2).every((t) => t.startsWith('プロファイル')), `query=${q}`);
+  }
+  assert.strictEqual(titleOf('profile 標準')[0], 'プロファイル (標準UI)');
+  assert.strictEqual(titleOf('profile kakucho')[0], 'プロファイル (拡張UI)');
+});
+
+test('MRU で使った方のプロファイルが上に来る', () => {
+  const top = Search.run('profile', entries, { limit: 1, mru: { 'setup-profiles': 3 } });
+  assert.strictEqual(top[0].path, '/lightning/setup/Profiles/home');
+});
+
+/* ------------------------------------------------------------------ */
+section('レコード Id ダイレクト遷移');
+
+test('15 桁 / 18 桁の Id を判定できる', () => {
+  assert.strictEqual(Search.detectRecordId('0015g00000XyZaB'), '0015g00000XyZaB');
+  assert.strictEqual(Search.detectRecordId(' 0015g00000XyZaBAAV '), '0015g00000XyZaBAAV');
+  assert.strictEqual(Search.detectRecordId('0055g00000AbCdEAAV'), '0055g00000AbCdEAAV');
+});
+
+test('18 桁 Id の末尾チェックサムを正しく計算する', () => {
+  assert.strictEqual(Search.idChecksum('0015g00000XyZaB'), 'AAV');
+  assert.strictEqual(Search.idChecksum('001000000000000'), 'AAA');
+  assert.strictEqual(Search.idChecksum('ABCDEABCDEABCDE'), '555');
+});
+
+test('Id ではない入力は判定しない', () => {
+  for (const q of [
+    'permissionsetgr', 'lightningcomponentx', // 英字だけの 15 / 18 文字
+    '0015g00000XyZa', '0015g00000XyZaBAA', // 桁数違い
+    '0015g00000XyZaBZZZ', // チェックサム不一致
+    '0015g00000XyZ-B', 'torihiki', '', null
+  ]) {
+    assert.strictEqual(Search.detectRecordId(q), null, `query=${q}`);
+  }
+});
+
+/* ------------------------------------------------------------------ */
+section('個人取引先（組織に応じた出し分け）');
+
+test('個人取引先が無効な組織ではエントリを作らない', () => {
+  assert.deepStrictEqual(Dict.orgEntries({ hasPersonAccount: false }), []);
+  assert.deepStrictEqual(Dict.orgEntries({}), []);
+  assert.deepStrictEqual(Dict.orgEntries(null), []);
+});
+
+test('個人取引先が有効ならオブジェクトマネージャへのエントリが引ける', () => {
+  const orgEntries = Dict.orgEntries({ hasPersonAccount: true }).map(Search.index);
+  assert.strictEqual(orgEntries.length, 1);
+  assert.strictEqual(orgEntries[0].path, '/lightning/setup/ObjectManager/PersonAccount/Details/view');
+  const pool = entries.concat(orgEntries);
+  for (const q of ['kojintorihikisaki', 'こじんとりひきさき', '個人取引先', 'personaccount', 'person account', 'pa']) {
+    assert.strictEqual(Search.run(q, pool, { limit: 1 })[0].id, 'obj:PersonAccount:setup', `query=${q}`);
+  }
+  // 既存の「取引先」の引き当てを奪わない
+  assert.strictEqual(Search.run('torihiki', pool, { limit: 1 })[0].title, '取引先');
+});
+
+/* ------------------------------------------------------------------ */
+section('代理ログイン (Login as)');
+
+test('> login as の検索語を取り出せる', () => {
+  assert.strictEqual(Search.parseLoginAs('login as tanaka'), 'tanaka');
+  assert.strictEqual(Search.parseLoginAs('Login As  田中 太郎 '), '田中 太郎');
+  assert.strictEqual(Search.parseLoginAs('loginas tanaka'), 'tanaka');
+  assert.strictEqual(Search.parseLoginAs('代理ログイン\u3000田中'), '田中');
+  assert.strictEqual(Search.parseLoginAs('login as'), '');
+  assert.strictEqual(Search.parseLoginAs('login as '), '');
+});
+
+test('代理ログイン以外のコマンドは対象にしない', () => {
+  for (const q of ['login', 'login a', 'login asx', 'logout', 'reload', '']) {
+    assert.strictEqual(Search.parseLoginAs(q), null, `query=${q}`);
+  }
+});
+
+test('sid Cookie から組織 Id を取り出せる', () => {
+  assert.strictEqual(Org.orgIdFromSessionId('00D5g000000ABCD!AQ4AQ.token'), '00D5g000000ABCD');
+  assert.strictEqual(Org.orgIdFromSessionId('no-org-id'), null);
+  assert.strictEqual(Org.orgIdFromSessionId(null), null);
+});
+
+test('代理ログイン URL は API ドメインの servlet.su を指す', () => {
+  const url = new URL(Org.buildLoginAsUrl(
+    'acme.my.salesforce-setup.com', '00D5g000000ABCD', '0055g00000AbCdE', '/lightning/setup/Flows/home'
+  ));
+  assert.strictEqual(url.origin, 'https://acme.my.salesforce.com');
+  assert.strictEqual(url.pathname, '/servlet/servlet.su');
+  assert.strictEqual(url.searchParams.get('oid'), '00D5g000000ABCD');
+  assert.strictEqual(url.searchParams.get('suorgadminid'), '0055g00000AbCdE');
+  assert.strictEqual(url.searchParams.get('retURL'), '/lightning/setup/Flows/home');
+  assert.strictEqual(url.searchParams.get('targetURL'), '/lightning/page/home');
+});
+
+test('SOQL の LIKE 用エスケープでインジェクションできない', () => {
+  assert.strictEqual(Org.escapeSoqlLike("O'Brien"), "O\\'Brien");
+  // バックスラッシュを先に潰さないと \' で文字列を閉じられてしまう
+  assert.strictEqual(Org.escapeSoqlLike("\\' OR Name != '"), "\\\\\\' OR Name != \\'");
+  assert.strictEqual(Org.escapeSoqlLike('100%_ok'), '100\\%\\_ok');
+  assert.strictEqual(Org.escapeSoqlLike(null), '');
+  // エスケープ後は、エスケープされていない引用符が残らない
+  for (const evil of ["'", "\\'", "\\\\'", "a'b'c", "%' OR '1'='1"]) {
+    const escaped = Org.escapeSoqlLike(evil);
+    assert.ok(!/(^|[^\\])(\\\\)*'/.test(escaped), `${evil} -> ${escaped}`);
+  }
+});
+
 /* ------------------------------------------------------------------ */
 section('組織ドメインと URL 生成');
 
@@ -282,7 +395,10 @@ test('content が送るメッセージを background が全て処理できる', 
   for (const type of sent) {
     assert.ok(handled.has(type), 'background に未実装のハンドラ: ' + type);
   }
-  assert.ok(sent.size >= 6, '検出したメッセージが少なすぎる: ' + sent.size);
+  assert.ok(sent.size >= 8, '検出したメッセージが少なすぎる: ' + sent.size);
+  for (const type of ['GET_ORG_INFO', 'SEARCH_USERS']) {
+    assert.ok(sent.has(type), 'content から送っていない: ' + type);
+  }
 });
 
 test('必要な権限とショートカットが宣言されている', () => {
@@ -292,6 +408,19 @@ test('必要な権限とショートカットが宣言されている', () => {
   assert.strictEqual(manifest.manifest_version, 3);
   assert.ok(manifest.commands['toggle-palette'].suggested_key.default);
   assert.ok(manifest.commands['toggle-palette'].suggested_key.mac);
+});
+
+test('ユーザー検索は debounce され、有効な内部ユーザーに絞っている', () => {
+  assert.ok(/USER_DEBOUNCE_MS\s*=\s*(\d+)/.test(contentSource), 'debounce 定数がない');
+  const ms = Number(contentSource.match(/USER_DEBOUNCE_MS\s*=\s*(\d+)/)[1]);
+  assert.ok(ms >= 300 && ms <= 500, 'debounce は 300〜500ms: ' + ms);
+  assert.ok(/IsActive = true/.test(backgroundSource));
+  assert.ok(/escapeSoqlLike\(trimmed\)/.test(backgroundSource), 'LIKE 句をエスケープしていない');
+});
+
+test('組織情報は storage.session にキャッシュし、再取得コマンドで破棄する', () => {
+  assert.ok(/rapex:orginfo:/.test(backgroundSource));
+  assert.ok(/remove\(\[[^\]]*orgInfoKey\(apiHost\)/.test(backgroundSource), 'clearCatalog が組織情報を破棄しない');
 });
 
 test('機密データをディスクへ書いていない (storage.local / sync 不使用)', () => {

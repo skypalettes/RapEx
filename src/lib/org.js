@@ -1,5 +1,5 @@
 /**
- * RapEx: 組織ドメインの解決と遷移先 URL の組み立て。
+ * RapEx: 組織ドメインの解決と遷移先 URL の組み立て、Salesforce 固有の文字列処理。
  * content script（クラシックスクリプト）と service worker（importScripts）の双方から使う。
  */
 var RapExOrg = (function () {
@@ -111,12 +111,46 @@ var RapExOrg = (function () {
     }
   }
 
+  /**
+   * セッション ID（sid Cookie）から組織 Id を取り出す。
+   * sid は「15 桁の組織 Id!トークン」の形をしているため、API を叩かずに求められる。
+   */
+  function orgIdFromSessionId(sessionId) {
+    var match = /^([a-zA-Z0-9]{15})!/.exec(String(sessionId || ''));
+    return match ? match[1] : null;
+  }
+
+  /**
+   * 代理ログイン (Login as) の URL。Salesforce 標準のサーブレットを API / Classic ドメインで開く。
+   * @param {string} returnPath 代理ログイン終了後に戻る画面のパス
+   */
+  function buildLoginAsUrl(host, orgId, userId, returnPath) {
+    var query = [
+      'oid=' + encodeURIComponent(orgId),
+      'suorgadminid=' + encodeURIComponent(userId),
+      'retURL=' + encodeURIComponent(returnPath || '/'),
+      'targetURL=' + encodeURIComponent('/lightning/page/home')
+    ].join('&');
+    return buildUrl(host, '/servlet/servlet.su?' + query);
+  }
+
+  /**
+   * SOQL の LIKE 句に埋め込む文字列をエスケープする（SOQL インジェクション対策）。
+   * バックスラッシュ・引用符に加え、ワイルドカード (% _) も文字として扱わせる。
+   */
+  function escapeSoqlLike(term) {
+    return String(term == null ? '' : term).replace(/[\\'%_]/g, function (ch) { return '\\' + ch; });
+  }
+
   return {
     splitHost: splitHost,
     toApiHost: toApiHost,
     toLightningHost: toLightningHost,
     buildUrl: buildUrl,
-    detectContext: detectContext
+    detectContext: detectContext,
+    orgIdFromSessionId: orgIdFromSessionId,
+    buildLoginAsUrl: buildLoginAsUrl,
+    escapeSoqlLike: escapeSoqlLike
   };
 })();
 

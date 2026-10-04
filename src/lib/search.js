@@ -165,9 +165,58 @@ var RapExSearch = (function () {
     return results.slice(0, limit).map(function (r) { return r.entry; });
   }
 
+  /* ---------------------------------------------------------------- */
+  /* クエリ解析                                                        */
+  /* ---------------------------------------------------------------- */
+
+  var RECORD_ID = /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/;
+  var CHECKSUM_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ012345';
+
+  /** 15 桁 Id から 18 桁 Id の末尾 3 文字（大文字小文字の復元用チェックサム）を求める。 */
+  function idChecksum(id15) {
+    var suffix = '';
+    for (var chunk = 0; chunk < 3; chunk++) {
+      var bits = 0;
+      for (var i = 0; i < 5; i++) {
+        var ch = id15.charAt(chunk * 5 + i);
+        if (ch >= 'A' && ch <= 'Z') bits |= 1 << i;
+      }
+      suffix += CHECKSUM_CHARS.charAt(bits);
+    }
+    return suffix;
+  }
+
+  /**
+   * 入力が Salesforce のレコード Id（15 桁 / 18 桁）ならそれを返す。違えば null。
+   * 「permissionsetgr」のような英字だけの語を Id と誤認して先頭に割り込ませないよう、
+   * 数字を含むことを条件にし、18 桁はチェックサムまで検証する。
+   */
+  function detectRecordId(raw) {
+    var value = String(raw || '').trim();
+    if (!RECORD_ID.test(value)) return null;
+    if (!/[0-9]/.test(value)) return null;
+    if (value.length === 18 && value.slice(15).toUpperCase() !== idChecksum(value.slice(0, 15))) return null;
+    return value;
+  }
+
+  var LOGIN_AS = /^(?:login\s*as|代理ログイン|だいりろぐいん)(?:[\s　]+([\s\S]*))?$/i;
+
+  /**
+   * コマンド（> の後ろ）が代理ログインなら検索語を返す（未入力は ''）。違えば null。
+   *   「login as tanaka」「loginas tanaka」「代理ログイン 田中」
+   */
+  function parseLoginAs(commandQuery) {
+    var match = LOGIN_AS.exec(String(commandQuery || '').trim());
+    if (!match) return null;
+    return (match[1] || '').trim();
+  }
+
   return {
     index: index,
     run: run,
+    detectRecordId: detectRecordId,
+    idChecksum: idChecksum,
+    parseLoginAs: parseLoginAs,
     scoreTokens: scoreTokens,
     scoreItem: scoreItem,
     scoreOne: scoreOne,

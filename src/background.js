@@ -5,6 +5,7 @@
  *   - Salesforce の Cookie(sid) からセッション ID を取り出す
  *   - REST / Tooling API を叩いて組織固有のメタデータを取得する
  *   - 取得結果を chrome.storage.session（インメモリ）に「組織ドメイン」をキーにキャッシュする
+ *   - 代理ログイン用のユーザー検索 (SOQL)
  *
  * セキュリティ方針: 組織のメタデータとセッション ID はディスクに書かない。
  * chrome.storage.session はブラウザを閉じると破棄される。
@@ -12,11 +13,14 @@
 
 importScripts('lib/org.js');
 
-const { toApiHost } = RapExOrg;
+const { toApiHost, orgIdFromSessionId, escapeSoqlLike } = RapExOrg;
 
 const FALLBACK_API_VERSION = '62.0';
 const CATALOG_TTL_MS = 30 * 60 * 1000;
 const SOSL_TIMEOUT_MS = 8000;
+const ORG_INFO_TIMEOUT_MS = 8000;
+const USER_SEARCH_TIMEOUT_MS = 8000;
+const USER_SEARCH_LIMIT = 10;
 
 /** 検索対象から外すシステム系オブジェクト */
 const EXCLUDED_SUFFIX = /(__Share|__History|__Feed|__Tag|__ChangeEvent|__hd|__hd\d*)$/;
@@ -189,9 +193,61 @@ async function getCatalog(host, { force = false } = {}) {
 
 async function clearCatalog(host) {
   const apiHost = toApiHost(host);
-  await chrome.storage.session.remove([catalogKey(apiHost), `rapex:version:${apiHost}`]);
+  await chrome.storage.session.remove([catalogKey(apiHost), orgInfoKey(apiHost), `rapex:version:${apiHost}`]);
   inflight.delete(catalogKey(apiHost));
+  inflight.delete(orgInfoKey(apiHost));
   return { cleared: apiHost };
+}
+
+/* ------------------------------------------------------------------ */
+/* 組織の設定（個人取引先の有効化など）                                 */
+/* ------------------------------------------------------------------ */
+
+function orgInfoKey(apiHost) {
+  return `rapex:orginfo:${apiHost}`;
+}
+
+async function fetchOrgInfo(apiHost) {
+  const sessionId = await getSessionId(apiHost);
+  if (!sessionId) throw new SalesforceError('NO_SESSION', 'Salesforce のセッションが見つかりません。');
+  const version = await resolveApiVersion(apiHost, sessionId);
+
+  // 個人取引先が有効な組織にだけ PersonAccount のエンティティが存在する
+  const soql = "SELECT QualifiedApiName FROM EntityDefinition WHERE QualifiedApiName = 'PersonAccount'";
+  const result = await apiFetch(
+    apiHost,
+    sessionId,
+    `/services/data/v${version}/tooling/query/?q=${encodeURIComponent(soql)}`,
+    ORG_INFO_TIMEOUT_MS
+  );
+  return { hasPersonAccount: (result.records || []).length > 0 };
+}
+
+/**
+ * 組織の設定は滅多に変わらないため TTL を設けず、ブラウザを閉じるまで（または
+ * 「> キャッシュを再取得」まで）セッションストレージのキャッシュを使い続ける。
+ * 取得に失敗した場合はキャッシュしないので、次にパレットを開いたときに再試行される。
+ */
+async function getOrgInfo(host) {
+  const apiHost = toApiHost(host);
+  const key = orgInfoKey(apiHost);
+
+  const cached = await chrome.storage.session.get(key);
+  if (cached[key]) return { ...cached[key], cached: true };
+  if (inflight.has(key)) return inflight.get(key);
+
+  const task = (async () => {
+    try {
+      const fresh = await fetchOrgInfo(apiHost);
+      await chrome.storage.session.set({ [key]: fresh });
+      return { ...fresh, cached: false };
+    } finally {
+      inflight.delete(key);
+    }
+  })();
+
+  inflight.set(key, task);
+  return task;
 }
 
 /* ------------------------------------------------------------------ */
@@ -240,6 +296,46 @@ async function searchRecords(host, term) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 代理ログイン用のユーザー検索 (SOQL)                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 有効なユーザーを名前 / ユーザー名の部分一致で引く。
+ * 数万ユーザー規模の組織を想定し、全件取得はせず入力のたびに（content 側で debounce して）問い合わせる。
+ * 代理ログインのサーブレットが使えるのは内部ユーザーだけなので UserType = 'Standard' に絞る。
+ */
+async function searchUsers(host, term) {
+  const trimmed = String(term || '').trim();
+  if (trimmed.length < 2) return { users: [], orgId: null, term: trimmed };
+
+  const apiHost = toApiHost(host);
+  const sessionId = await getSessionId(apiHost);
+  if (!sessionId) throw new SalesforceError('NO_SESSION', 'Salesforce のセッションが見つかりません。');
+  const orgId = orgIdFromSessionId(sessionId);
+  if (!orgId) throw new SalesforceError('NO_ORG_ID', '組織 Id を特定できません。');
+  const version = await resolveApiVersion(apiHost, sessionId);
+
+  const pattern = `'%${escapeSoqlLike(trimmed)}%'`;
+  const soql = 'SELECT Id, Name, Username, Profile.Name FROM User' +
+    ` WHERE IsActive = true AND UserType = 'Standard' AND (Name LIKE ${pattern} OR Username LIKE ${pattern})` +
+    ` ORDER BY Name LIMIT ${USER_SEARCH_LIMIT}`;
+  const result = await apiFetch(
+    apiHost,
+    sessionId,
+    `/services/data/v${version}/query/?q=${encodeURIComponent(soql)}`,
+    USER_SEARCH_TIMEOUT_MS
+  );
+
+  const users = (result.records || []).map((record) => ({
+    id: record.Id,
+    name: record.Name,
+    username: record.Username,
+    profile: (record.Profile && record.Profile.Name) || ''
+  }));
+  return { users, orgId, term: trimmed };
+}
+
+/* ------------------------------------------------------------------ */
 /* 最近使った項目 (MRU) — セッション内のみ                             */
 /* ------------------------------------------------------------------ */
 
@@ -272,7 +368,9 @@ const HANDLERS = {
   PING: async () => ({ ok: true }),
   GET_CATALOG: (message) => getCatalog(message.host, { force: !!message.force }),
   CLEAR_CATALOG: (message) => clearCatalog(message.host),
+  GET_ORG_INFO: (message) => getOrgInfo(message.host),
   SEARCH_RECORDS: (message) => searchRecords(message.host, message.term),
+  SEARCH_USERS: (message) => searchUsers(message.host, message.term),
   GET_MRU: (message) => getMru(message.host),
   TOUCH_MRU: (message) => touchMru(message.host, message.entryId),
   OPEN_TAB: async (message) => {
