@@ -147,9 +147,59 @@ var RapExDictionary = (function () {
     return list;
   }
 
+  var EXP_KEYWORDS = ['えくすぺりえんす', 'experience cloud', 'community', 'こみゅにてぃ', 'site', 'さいと'];
+
+  /**
+   * サイトのワークスペース / ビルダーは、設定の「すべてのサイト」と同じく
+   * サイト切り替えのサーブレット経由で開く（Lightning の設定画面には直接の URL が無い）。
+   */
+  function networkSwitchPath(networkId, startUrl) {
+    return '/servlet/networks/switch?networkId=' + encodeURIComponent(networkId) +
+      '&startURL=' + encodeURIComponent(startUrl);
+  }
+
+  /** Experience Cloud 関連のエントリ。background.js の fetchExperienceCloud の結果から作る。 */
+  function experienceCloudEntries(expData) {
+    var entries = [];
+    if (!expData || !expData.isEnabled) return entries;
+
+    entries.push(entry('setup-network-settings', 'setup', 'デジタルエクスペリエンス: 設定', '設定',
+      '/lightning/setup/NetworkSettings/home',
+      ['でじたるえくすぺりえんす', 'digital experiences', 'network settings', 'せってい'].concat(EXP_KEYWORDS),
+      { boost: 20 }));
+    entries.push(entry('setup-network-sites', 'setup', 'すべてのサイト', '設定',
+      '/lightning/setup/SetupNetworks/home',
+      ['すべてのさいと', 'all sites', 'でじたるえくすぺりえんす', 'digital experiences'].concat(EXP_KEYWORDS),
+      { boost: 20 }));
+
+    // 拡張プロファイルユーザーインターフェースの有効 / 無効で遷移先が異なるため、
+    // 静的辞書のプロファイルと同じく両方を載せて MRU の学習に任せる。
+    (expData.guestProfiles || []).forEach(function (p) {
+      var name = String(p.name || '').replace(/\s*(Profile|プロファイル)$/i, '') || p.name;
+      var keywords = ['guest', 'げすと', 'profile', 'ぷろふぁいる', 'guest user', 'げすとゆーざー'].concat(EXP_KEYWORDS);
+      entries.push(entry('guest-profile-enh:' + p.id, 'setup', name + ' (ゲストプロファイル - 拡張UI)', 'Experience Cloud',
+        '/lightning/setup/EnhancedProfiles/page?address=' + encodeURIComponent('/' + p.id),
+        keywords.concat(['enhanced', 'かくちょう']), { boost: 15 }));
+      entries.push(entry('guest-profile-std:' + p.id, 'setup', name + ' (ゲストプロファイル - 標準UI)', 'Experience Cloud',
+        '/lightning/setup/Profiles/page?address=' + encodeURIComponent('/' + p.id),
+        keywords.concat(['standard', 'ひょうじゅん']), { boost: 10 }));
+    });
+
+    (expData.networks || []).forEach(function (n) {
+      entries.push(entry('network-workspace:' + n.id, 'setup', n.name + ' - ワークスペース', 'Experience Cloud',
+        networkSwitchPath(n.id, '/communitySetup/cwApp.app#/c/home'),
+        ['workspace', 'わーくすぺーす', 'workspaces'].concat(EXP_KEYWORDS), { boost: 15 }));
+      entries.push(entry('network-builder:' + n.id, 'setup', n.name + ' - ビルダー', 'Experience Cloud',
+        networkSwitchPath(n.id, '/sfsites/picasso/core/config/commeditor.jsp'),
+        ['builder', 'びるだー', 'experience builder', 'えくすぺりえんすびるだー'].concat(EXP_KEYWORDS), { boost: 15 }));
+    });
+
+    return entries;
+  }
+
   /**
    * 組織の設定に応じて出し分けるエントリ。background.js の GET_ORG_INFO の結果から作る。
-   * @param {{hasPersonAccount?: boolean}} info
+   * @param {{hasPersonAccount?: boolean, expData?: object}} info
    */
   function orgEntries(info) {
     var entries = [];
@@ -159,6 +209,7 @@ var RapExDictionary = (function () {
         ['こじんとりひきさき', 'PersonAccount', 'person account', 'せってい', 'setup', 'object manager'],
         { apiName: 'PersonAccount', custom: false, boost: 15 }));
     }
+    if (info) entries = entries.concat(experienceCloudEntries(info.expData));
     return entries;
   }
 

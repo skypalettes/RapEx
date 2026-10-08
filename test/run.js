@@ -187,6 +187,104 @@ test('個人取引先が有効ならオブジェクトマネージャへのエ�
 });
 
 /* ------------------------------------------------------------------ */
+section('Experience Cloud（組織に応じた出し分け）');
+
+const EXP_DATA = {
+  isEnabled: true,
+  networks: [
+    { id: '0DB5g000000AbcDGAS', name: 'Acme Portal' },
+    { id: '0DB5g000000XyzWGAS', name: 'パートナーサイト' }
+  ],
+  guestProfiles: [
+    { id: '00e5g000001GstAAAS', name: 'Acme Portal Profile' },
+    { id: '00e5g000001GstBAAS', name: 'パートナーサイト プロファイル' }
+  ]
+};
+const expEntries = Dict.orgEntries({ expData: EXP_DATA }).map(Search.index);
+const expPool = entries.concat(expEntries);
+const expTop = (q, n = 1) => Search.run(q, expPool, { limit: n });
+
+test('Experience Cloud が無効 / 権限なしの組織ではエントリを作らない', () => {
+  assert.deepStrictEqual(Dict.orgEntries({ expData: { isEnabled: false, networks: [], guestProfiles: [] } }), []);
+  assert.deepStrictEqual(Dict.orgEntries({ hasPersonAccount: false, expData: null }), []);
+});
+
+test('有効なら 設定 2 件 + ゲストプロファイル x2 + サイト x2 のエントリを作る', () => {
+  assert.strictEqual(expEntries.length, 2 + EXP_DATA.guestProfiles.length * 2 + EXP_DATA.networks.length * 2);
+  // サイトもプロファイルも 0 件でも設定画面への 2 件は出す
+  assert.strictEqual(Dict.orgEntries({ expData: { isEnabled: true, networks: [], guestProfiles: [] } }).length, 2);
+  // 個人取引先と併存できる
+  assert.strictEqual(Dict.orgEntries({ hasPersonAccount: true, expData: EXP_DATA }).length, expEntries.length + 1);
+});
+
+test('設定画面（デジタルエクスペリエンス / すべてのサイト）が引ける', () => {
+  for (const q of ['digital experiences', 'でじたるえくすぺりえんす', 'dejitaru', 'デジタルエクスペリエンス 設定']) {
+    assert.ok(
+      expTop(q, 2).some((e) => e.path === '/lightning/setup/NetworkSettings/home'),
+      `query=${q}`
+    );
+  }
+  for (const q of ['all sites', 'すべてのサイト', 'subetenosaito']) {
+    assert.strictEqual(expTop(q)[0].path, '/lightning/setup/SetupNetworks/home', `query=${q}`);
+  }
+});
+
+test('ゲストプロファイルは 拡張UI / 標準UI の両方が出て、名前の接尾辞を落とす', () => {
+  const hits = expTop('guest acme', 2);
+  assert.deepStrictEqual(
+    hits.map((e) => e.path).sort(),
+    [
+      '/lightning/setup/EnhancedProfiles/page?address=%2F00e5g000001GstAAAS',
+      '/lightning/setup/Profiles/page?address=%2F00e5g000001GstAAAS'
+    ]
+  );
+  assert.strictEqual(hits[0].title, 'Acme Portal (ゲストプロファイル - 拡張UI)');
+  assert.ok(expEntries.some((e) => e.title === 'パートナーサイト (ゲストプロファイル - 標準UI)'));
+  assert.strictEqual(expTop('げすと ぱーとなー 標準')[0].id, 'guest-profile-std:00e5g000001GstBAAS');
+  // MRU で使った方が上に来る
+  assert.strictEqual(
+    Search.run('guest acme', expPool, { limit: 1, mru: { 'guest-profile-std:00e5g000001GstAAAS': 3 } })[0].id,
+    'guest-profile-std:00e5g000001GstAAAS'
+  );
+});
+
+test('ゲストプロファイルが静的辞書の「プロファイル」の引き当てを奪わない', () => {
+  for (const q of ['profile', 'ぷろふぁいる', 'purofairu']) {
+    assert.ok(expTop(q, 2).every((e) => e.title.startsWith('プロファイル')), `query=${q}`);
+  }
+});
+
+test('各サイトのワークスペース / ビルダーへ遷移できる', () => {
+  const workspace = expTop('acme workspace')[0];
+  assert.strictEqual(workspace.id, 'network-workspace:0DB5g000000AbcDGAS');
+  const builder = expTop('ぱーとなー びるだー')[0];
+  assert.strictEqual(builder.id, 'network-builder:0DB5g000000XyzWGAS');
+  assert.strictEqual(expTop('acme builder')[0].id, 'network-builder:0DB5g000000AbcDGAS');
+  assert.strictEqual(expTop('wakusupesu', 1)[0].group, 'setup');
+
+  const wsUrl = new URL(Org.buildUrl('acme.lightning.force.com', workspace.path));
+  assert.strictEqual(wsUrl.origin, 'https://acme.my.salesforce.com');
+  assert.strictEqual(wsUrl.pathname, '/servlet/networks/switch');
+  assert.strictEqual(wsUrl.searchParams.get('networkId'), '0DB5g000000AbcDGAS');
+  assert.strictEqual(wsUrl.searchParams.get('startURL'), '/communitySetup/cwApp.app#/c/home');
+  const builderUrl = new URL(Org.buildUrl('acme.my.salesforce-setup.com', builder.path));
+  assert.strictEqual(builderUrl.searchParams.get('startURL'), '/sfsites/picasso/core/config/commeditor.jsp');
+});
+
+test('Experience Cloud のエントリも ID 重複なく実在ホストへ解決される', () => {
+  const seen = new Set(entries.map((e) => e.id));
+  for (const entry of expEntries) {
+    assert.ok(!seen.has(entry.id), '重複: ' + entry.id);
+    seen.add(entry.id);
+    const url = new URL(Org.buildUrl('acme.my.salesforce-setup.com', entry.path));
+    assert.ok(
+      url.hostname === 'acme.lightning.force.com' || url.hostname === 'acme.my.salesforce.com',
+      `${entry.id}: ${url.hostname}`
+    );
+  }
+});
+
+/* ------------------------------------------------------------------ */
 section('代理ログイン (Login as)');
 
 test('> login as の検索語を取り出せる', () => {
@@ -421,6 +519,15 @@ test('ユーザー検索は debounce され、有効な内部ユーザーに絞�
 test('組織情報は storage.session にキャッシュし、再取得コマンドで破棄する', () => {
   assert.ok(/rapex:orginfo:/.test(backgroundSource));
   assert.ok(/remove\(\[[^\]]*orgInfoKey\(apiHost\)/.test(backgroundSource), 'clearCatalog が組織情報を破棄しない');
+  assert.ok(/rapex:expcloud:/.test(backgroundSource));
+  assert.ok(/remove\(\[[^\]]*expCloudKey\(apiHost\)/.test(backgroundSource), 'clearCatalog が Experience Cloud を破棄しない');
+});
+
+test('Experience Cloud は Network への SOQL の成否で判定し、ゲストプロファイルを引く', () => {
+  assert.ok(/FROM Network/.test(backgroundSource));
+  assert.ok(/FROM Profile WHERE UserType = 'Guest'/.test(backgroundSource));
+  // API バージョンは固定値ではなく組織から解決したものを使う
+  assert.ok(!/services\/data\/v\d+\.\d+\//.test(backgroundSource), 'API バージョンを直書きしている');
 });
 
 test('機密データをディスクへ書いていない (storage.local / sync 不使用)', () => {

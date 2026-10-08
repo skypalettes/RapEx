@@ -6,6 +6,7 @@
  *   - REST / Tooling API を叩いて組織固有のメタデータを取得する
  *   - 取得結果を chrome.storage.session（インメモリ）に「組織ドメイン」をキーにキャッシュする
  *   - 代理ログイン用のユーザー検索 (SOQL)
+ *   - Experience Cloud のサイト / ゲストユーザープロファイルの取得 (SOQL)
  *
  * セキュリティ方針: 組織のメタデータとセッション ID はディスクに書かない。
  * chrome.storage.session はブラウザを閉じると破棄される。
@@ -21,6 +22,8 @@ const SOSL_TIMEOUT_MS = 8000;
 const ORG_INFO_TIMEOUT_MS = 8000;
 const USER_SEARCH_TIMEOUT_MS = 8000;
 const USER_SEARCH_LIMIT = 10;
+const EXP_CLOUD_TIMEOUT_MS = 8000;
+const EXP_CLOUD_LIMIT = 200;
 
 /** 検索対象から外すシステム系オブジェクト */
 const EXCLUDED_SUFFIX = /(__Share|__History|__Feed|__Tag|__ChangeEvent|__hd|__hd\d*)$/;
@@ -193,9 +196,15 @@ async function getCatalog(host, { force = false } = {}) {
 
 async function clearCatalog(host) {
   const apiHost = toApiHost(host);
-  await chrome.storage.session.remove([catalogKey(apiHost), orgInfoKey(apiHost), `rapex:version:${apiHost}`]);
+  await chrome.storage.session.remove([
+    catalogKey(apiHost),
+    orgInfoKey(apiHost),
+    expCloudKey(apiHost),
+    `rapex:version:${apiHost}`
+  ]);
   inflight.delete(catalogKey(apiHost));
   inflight.delete(orgInfoKey(apiHost));
+  inflight.delete(expCloudKey(apiHost));
   return { cleared: apiHost };
 }
 
@@ -228,17 +237,14 @@ async function fetchOrgInfo(apiHost) {
  * 「> キャッシュを再取得」まで）セッションストレージのキャッシュを使い続ける。
  * 取得に失敗した場合はキャッシュしないので、次にパレットを開いたときに再試行される。
  */
-async function getOrgInfo(host) {
-  const apiHost = toApiHost(host);
-  const key = orgInfoKey(apiHost);
-
+async function cachedForSession(key, fetcher) {
   const cached = await chrome.storage.session.get(key);
   if (cached[key]) return { ...cached[key], cached: true };
   if (inflight.has(key)) return inflight.get(key);
 
   const task = (async () => {
     try {
-      const fresh = await fetchOrgInfo(apiHost);
+      const fresh = await fetcher();
       await chrome.storage.session.set({ [key]: fresh });
       return { ...fresh, cached: false };
     } finally {
@@ -248,6 +254,76 @@ async function getOrgInfo(host) {
 
   inflight.set(key, task);
   return task;
+}
+
+/**
+ * 個人取引先の判定と Experience Cloud の取得は互いに独立しているため並行に問い合わせ、
+ * 片方が失敗してももう片方の結果は返す（両方失敗したときだけエラーにする）。
+ */
+async function getOrgInfo(host) {
+  const apiHost = toApiHost(host);
+  const [info, expData] = await Promise.allSettled([
+    cachedForSession(orgInfoKey(apiHost), () => fetchOrgInfo(apiHost)),
+    cachedForSession(expCloudKey(apiHost), () => fetchExperienceCloud(apiHost))
+  ]);
+  if (info.status === 'rejected' && expData.status === 'rejected') throw info.reason;
+  return {
+    ...(info.status === 'fulfilled' ? info.value : {}),
+    expData: expData.status === 'fulfilled' ? expData.value : null
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Experience Cloud（サイト / ゲストユーザープロファイル）              */
+/* ------------------------------------------------------------------ */
+
+function expCloudKey(apiHost) {
+  return `rapex:expcloud:${apiHost}`;
+}
+
+/**
+ * 4xx（INVALID_TYPE など）は「Experience Cloud が無効」または「権限が無い」という確定した答え。
+ * タイムアウトや 401 は一時的な失敗なので、キャッシュせず次回に再試行させる。
+ */
+function isDefinitiveFailure(error) {
+  return /^HTTP_4/.test((error && error.code) || '');
+}
+
+/**
+ * Network オブジェクトへの SOQL の成否で、Experience Cloud の有効化と実行ユーザーの権限を判定する。
+ * 有効であればサイト一覧とゲストユーザープロファイルもあわせて取得する。
+ */
+async function fetchExperienceCloud(apiHost) {
+  const sessionId = await getSessionId(apiHost);
+  if (!sessionId) throw new SalesforceError('NO_SESSION', 'Salesforce のセッションが見つかりません。');
+  const version = await resolveApiVersion(apiHost, sessionId);
+  const query = (soql) => apiFetch(
+    apiHost,
+    sessionId,
+    `/services/data/v${version}/query/?q=${encodeURIComponent(soql)}`,
+    EXP_CLOUD_TIMEOUT_MS
+  );
+  const toIdName = (result) => (result.records || []).map((record) => ({ id: record.Id, name: record.Name }));
+
+  let networks;
+  try {
+    networks = await query(`SELECT Id, Name FROM Network ORDER BY Name LIMIT ${EXP_CLOUD_LIMIT}`);
+  } catch (error) {
+    if (isDefinitiveFailure(error)) return { isEnabled: false, networks: [], guestProfiles: [] };
+    throw error;
+  }
+
+  let guestProfiles = [];
+  try {
+    const profiles = await query(
+      `SELECT Id, Name FROM Profile WHERE UserType = 'Guest' ORDER BY Name LIMIT ${EXP_CLOUD_LIMIT}`
+    );
+    guestProfiles = toIdName(profiles);
+  } catch (error) {
+    if (!isDefinitiveFailure(error)) throw error;
+  }
+
+  return { isEnabled: true, networks: toIdName(networks), guestProfiles };
 }
 
 /* ------------------------------------------------------------------ */
